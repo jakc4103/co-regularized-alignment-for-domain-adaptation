@@ -15,3 +15,17 @@ Adaptation](https://arxiv.org/pdf/1811.05443.pdf)
 
 ***
 ## Training losses & results
+|agreement loss|diverse loss|
+|---|---
+|<img src="./images/agree_loss.png" width="320" height="240">|<img src="./images/div_loss.png" width="320" height="240">
+***
+
+<img src="./images/loss1_1.png" width="600" height="240">
+<img src="./images/loss1_2.png" width="600" height="240">
+
+***
+
+|net_num|validation|test|
+|---|---|---
+|net1|<img src="./images/val1.png" width="320" height="240">|<img src="./images/test1.png" width="320" height="240">
+|net2|<img src="./images/val2.png" width="320" height="240">|<img src="./images/test2.png" width="320" height="240">
