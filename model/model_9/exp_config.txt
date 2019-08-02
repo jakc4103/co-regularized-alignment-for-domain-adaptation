@@ -1,0 +1,39 @@
+mode: 0
+model_index:9
+source: mnist
+target: svhn
+save_path: D:/workspace/DA/model_9
+total_epoch: 200
+batch_size: 128
+lr: 0.001
+lambda_dom: 0.01
+lambda_ent: 0.01
+lambda_div: 0.001
+div_margin: 100
+lambda_agree: 0.001
+mode: 0
+model_index:9
+source: mnist
+target: svhn
+save_path: D:/workspace/DA/model/model_9
+total_epoch: 200
+batch_size: 128
+lr: 0.001
+lambda_dom: 0.01
+lambda_ent: 0.01
+lambda_div: 0.001
+div_margin: 100
+lambda_agree: 0.001
+mode: 0
+model_index:9
+source: mnist
+target: svhn
+save_path: D:/workspace/DA/model/model_9
+total_epoch: 200
+batch_size: 128
+lr: 0.001
+lambda_dom: 0.01
+lambda_ent: 0.01
+lambda_div: 0.001
+div_margin: 100
+lambda_agree: 0.001
