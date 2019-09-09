@@ -14,7 +14,7 @@ Adaptation](https://arxiv.org/pdf/1811.05443.pdf)
 * tqdm
 
 ***
-## Training losses & results
+## Training losses & results from MNIST->SVHN task
 |agreement loss|diverse loss|
 |---|---
 |<img src="./images/agree_loss.png" width="320" height="240">|<img src="./images/div_loss.png" width="320" height="240">
