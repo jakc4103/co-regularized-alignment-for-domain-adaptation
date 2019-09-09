@@ -31,5 +31,9 @@ Adaptation](https://arxiv.org/pdf/1811.05443.pdf)
 |net2|<img src="./images/val2.png" width="320" height="240">|<img src="./images/test2.png" width="320" height="240">
 
 ***
+TODO:
+1. DIRT-T model
+
+***
 Note: 
 See https://github.com/lyakaap/VAT-pytorch for original implementation of VAT loss
