@@ -1,15 +1,17 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import cv2
 import os
 from tqdm import tqdm
 from tensorboardX import SummaryWriter
-from loss_function import diverse_loss, agreement_loss
+from loss_function.loss_co_reg import diverse_loss, agreement_loss, cross_entropy_loss
+from loss_function.loss_vat import VATLoss
 import copy
 import time
 
 class Trainer():
-    def __init__(self, nets, train_data_loader, val_data_loader, test_data_loader, config, net2=None):
+    def __init__(self, nets, train_data_loader, val_data_loader, test_data_loader, config):
         if config.gpu:
             self.nets = [net.cuda() for net in nets]
         else:
@@ -24,13 +26,15 @@ class Trainer():
 
         self.exp_net = copy.deepcopy(self.nets)
 
-        self.writer = SummaryWriter(os.path.join(config.save_path, 'tensorboard', 'exp_' + str(int(time.time()))))
+        if self.train_data is not None:
+            self.writer = SummaryWriter(os.path.join(config.save_path, 'tensorboard', 'exp_' + str(int(time.time()))))
 
         self.optim = []
         self.optim_dom = []
         self.dom_criterion = []
         self.dom_inv_criterion = []
         self.criterion = []
+        self.vat_criterion = []
 
         for net in self.nets:
             category_param, dom_param = self.get_param_list(net)
@@ -41,6 +45,7 @@ class Trainer():
             self.dom_criterion.append(torch.nn.BCEWithLogitsLoss())
             self.dom_inv_criterion.append(torch.nn.BCEWithLogitsLoss())
             self.criterion.append(torch.nn.CrossEntropyLoss())
+            self.vat_criterion.append(VATLoss(xi=1e-6, eps=3.5))
 
 
     def get_param_list(self, net):
@@ -85,7 +90,7 @@ class Trainer():
 
             timage = batchSample['timage'].float()
             tlabel = batchSample['tlabel'].long()
-            
+
             dom_label = torch.cat([torch.zeros(simage.size(0)), torch.ones(timage.size(0))]).view(-1, 1)
             dom_inv_label = torch.cat([torch.ones(simage.size(0)), torch.zeros(timage.size(0))]).view(-1, 1)
 
@@ -97,42 +102,61 @@ class Trainer():
                 dom_label = dom_label.cuda()
                 dom_inv_label = dom_inv_label.cuda()
 
-            logit_list = []
-            prob_list = []
+            slogit_list = []
+            tlogit_list = []
+            
             dom_logit_list = []
+
             feat_list = []
-            for net in self.nets: # inference for all nets
-                logits, dom_logits, feats = net(torch.cat([simage, timage], 0))
-                logit_list.append(logits)
-                prob_list.append(torch.nn.functional.softmax(logits, 1))
-                dom_logit_list.append(dom_logits)
-                feat_list.append(feats)
+            prob_list = []
+            
+            svat_loss_list = []
+            tvat_loss_list = []
+            #images_iter = torch.cat([simage, timage], 0)
+            for idx, net in enumerate(self.nets): # inference for all nets
+                tvat_loss, timage_vat = self.vat_criterion[idx](self.nets[idx], timage)
+                svat_loss, simage_vat = self.vat_criterion[idx](self.nets[idx], simage)
+
+                svat_loss_list.append(svat_loss)
+                tvat_loss_list.append(tvat_loss)
+
+                slogits, sdom_logits, sfeats = net(simage)
+                tlogits, tdom_logits, _ = net(timage, update_stats=True)
+
+                slogit_list.append(slogits)
+                tlogit_list.append(tlogits)
+
+                prob_list.append(torch.nn.functional.softmax(tlogits, 1))
+
+                dom_logit_list.append(torch.cat([sdom_logits, tdom_logits], dim=0))
+                
+                feat_list.append(sfeats)
 
             agree_loss = 0
             div_loss = 0
-            for i in range(len(logit_list) - 1):
-                for j in range(i + 1, len(logit_list)):
+            
+            for i in range(len(feat_list) - 1):
+                for j in range(i + 1, len(feat_list)):
                     # diversoty loss
-                    tmp_div_loss = diverse_loss(feat_list[i][:simage.size(0)], feat_list[j][:simage.size(0)], self.config.div_margin)
+                    tmp_div_loss = diverse_loss(feat_list[i], feat_list[j], self.config.div_margin)
                     div_loss += tmp_div_loss
 
                     # agree_loss
-                    tmp_agree_loss = agreement_loss(prob_list[i][simage.size(0):], prob_list[j][simage.size(0):])
+                    tmp_agree_loss = agreement_loss(prob_list[i], prob_list[j])
                     agree_loss += tmp_agree_loss
 
             self.writer.add_scalar('div_loss', float(div_loss), self.len_train_data * epoch + step)
             self.writer.add_scalar('agree_loss', float(agree_loss), self.len_train_data * epoch + step)
 
-            for idx in range(len(logit_list)):
-                logits = logit_list[idx]
-                dom_logits = dom_logit_list[idx]
-                closs = self.criterion[idx](logits[:simage.size(0)], slabel)
-                ent_loss = self.criterion[idx](logits[simage.size(0):], tlabel)
-                dom_loss = self.dom_criterion[idx](dom_logits, dom_label)
-                dom_inv_loss = self.dom_inv_criterion[idx](dom_logits, dom_inv_label)
+            for idx in range(len(slogit_list)):                
+                closs = self.criterion[idx](slogit_list[idx], slabel)
+                ent_loss = cross_entropy_loss(tlogit_list[idx])
+
+                dom_loss = self.dom_criterion[idx](dom_logit_list[idx], dom_label) * 0.5
+                dom_inv_loss = self.dom_inv_criterion[idx](dom_logit_list[idx], dom_inv_label) * 0.5
 
                 CCloss = closs + self.config.lambda_dom * dom_loss + self.config.lambda_ent * ent_loss -\
-                    self.config.lambda_div * div_loss + self.config.lambda_agree * agree_loss
+                    self.config.lambda_div * div_loss + self.config.lambda_agree * agree_loss + svat_loss_list[idx] + tvat_loss_list[idx] * self.config.lambda_ent
                 DDloss = dom_inv_loss
 
                 self.writer.add_scalar('net_{}/closs'.format(idx), float(closs), self.len_train_data * epoch + step)
@@ -140,6 +164,8 @@ class Trainer():
                 self.writer.add_scalar('net_{}/dom_loss'.format(idx), float(dom_loss), self.len_train_data * epoch + step)
                 self.writer.add_scalar('net_{}/dom_inv_loss'.format(idx), float(dom_inv_loss), self.len_train_data * epoch + step)
                 self.writer.add_scalar('net_{}/CCloss'.format(idx), float(CCloss), self.len_train_data * epoch + step)
+                self.writer.add_scalar('net_{}/svat_loss'.format(idx), float(svat_loss_list[idx]), self.len_train_data * epoch + step)
+                self.writer.add_scalar('net_{}/tvat_loss'.format(idx), float(tvat_loss_list[idx]), self.len_train_data * epoch + step)
 
                 optim = self.optim[idx]
                 optim_dom = self.optim_dom[idx]
@@ -157,9 +183,18 @@ class Trainer():
             pbar.set_description("CCloss %5f DDloss %5f epoch %d" % \
                 (round(float(CCloss), 5), round(float(DDloss), 5), epoch))
 
-            del simage, timage, slabel, tlabel, logits
+            if step == len(self.train_data) - 1:# save visualization vat images
+                tmp_img = (((simage + 1. ) / 2. ))
+                self.writer.add_images('original_source', tmp_img, epoch)
 
-        #self.writer.add_scalar('train_acc')
+                tmp_img = (((timage + 1. ) / 2. ))
+                self.writer.add_images('original_target', tmp_img, epoch)
+
+                tmp_img = (((simage_vat + 1. ) / 2. ))
+                self.writer.add_images('vat_source', tmp_img, epoch)
+
+                tmp_img = (((timage_vat + 1. ) / 2. ))
+                self.writer.add_images('vat_target', tmp_img, epoch)
 
 
     def val_(self, net, epoch, idx, mode='val'):
@@ -178,7 +213,6 @@ class Trainer():
                 timage = batchSample['timage'].float()
                 tlabel = batchSample['tlabel'].long()
 
-                
                 dom_label = torch.cat([torch.zeros(simage.size(0)), torch.ones(timage.size(0))]).view(-1, 1)
                 dom_inv_label = torch.cat([torch.ones(simage.size(0)), torch.zeros(timage.size(0))]).view(-1, 1)
 
@@ -190,11 +224,11 @@ class Trainer():
                     dom_label = dom_label.cuda()
                     dom_inv_label = dom_inv_label.cuda()
 
-                #logits, dom_logits = self.net(torch.cat([simage, timage], 0))
                 logits, dom_logits, _ = net(torch.cat([simage, timage], 0))
 
                 closs = self.criterion[idx](logits[:simage.size(0)], slabel)
-                ent_loss = self.criterion[idx](logits[simage.size(0):], tlabel)
+                ent_loss = cross_entropy_loss(logits[simage.size(0):])
+                
                 dom_loss = self.dom_criterion[idx](dom_logits, dom_label)
                 dom_inv_loss = self.dom_inv_criterion[idx](dom_logits, dom_inv_label)
                 CCloss = closs + self.config.lambda_dom * dom_loss
@@ -207,19 +241,19 @@ class Trainer():
 
                 pbar.set_description(mode+(" acc: %5f epoch %d" % (round(float(num_correct) / num_all, 5), epoch)))
 
-                del simage, timage, slabel, tlabel, logits
-
             acc = float(total_correct) / total_data
-            self.writer.add_scalar('net_{}/'.format(idx)+mode+'/acc', acc, epoch)
+            if self.train_data is not None:
+                self.writer.add_scalar('net_{}/'.format(idx)+mode+'/acc', acc, epoch)
 
             loss = np.mean(np.array(loss), 0)
 
-            if net.training:
+            if self.train_data is not None:
                 self.writer.add_scalar('net_{}/'.format(idx)+mode+'/closs', float(loss[0]), epoch)
                 self.writer.add_scalar('net_{}/'.format(idx)+mode+'/dom_loss', float(loss[1]), epoch)
                 self.writer.add_scalar('net_{}/'.format(idx)+mode+'/dom_inv_loss', float(loss[2]), epoch)
                 self.writer.add_scalar('net_{}/'.format(idx)+mode+'/CCloss', float(loss[3]), epoch)
                 self.writer.add_scalar('net_{}/'.format(idx)+mode+'/entloss', float(loss[4]), epoch)
+                #self.writer.add_scalar('net_{}/'.format(idx)+mode+'/vatloss', float(loss[5]), epoch)
 
             return acc
 
@@ -234,12 +268,6 @@ class Trainer():
 
 
     def save_net(self, net, name, idx):
-        file_list = self.getfiles(self.config.save_path)
-
-        for ii in range(len(file_list) - 30):
-            os.remove(os.path.join(self.config.save_path, file_list[ii]))
-
-        #for idx, net in enumerate(nets):
         torch.save(net.state_dict(), os.path.join(self.config.save_path, name + '_' + str(idx)))
 
 

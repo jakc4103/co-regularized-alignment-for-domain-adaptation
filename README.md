@@ -8,7 +8,7 @@ Adaptation](https://arxiv.org/pdf/1811.05443.pdf)
 ## Prerequisite
 * python 3.6
 * PyTorch 1.1
-* tensorboard
+* tensorboardX
 * numpy
 * cv2
 * tqdm
@@ -29,3 +29,7 @@ Adaptation](https://arxiv.org/pdf/1811.05443.pdf)
 |---|---|---
 |net1|<img src="./images/val1.png" width="320" height="240">|<img src="./images/test1.png" width="320" height="240">
 |net2|<img src="./images/val2.png" width="320" height="240">|<img src="./images/test2.png" width="320" height="240">
+
+***
+Nonte: 
+See https://github.com/lyakaap/VAT-pytorch for original implementation of VAT loss
